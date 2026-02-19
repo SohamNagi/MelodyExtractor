@@ -1,7 +1,7 @@
 from melody_extractor.visualizer import render_midi_player
 from melody_extractor.torch_backend import get_torch_runtime_info, select_torch_device
 from melody_extractor.key_detection import detect_key, get_available_methods
-from melody_extractor.midi_gen import notes_to_midi, midi_to_bytes, notes_to_dataframe, f0_to_dataframe
+from melody_extractor.midi_gen import notes_to_midi, midi_to_bytes, notes_to_dataframe
 from melody_extractor.postprocessing import postprocess_pipeline
 from melody_extractor.extractors import get_available_extractors, get_extractor
 from melody_extractor.separation import separate_audio, get_available_models, DEMUCS_AVAILABLE
@@ -44,6 +44,18 @@ def init_session_state() -> None:
         "source_duration_sec": None,
         "key_result": None,
         "pipeline_statuses": {},
+        "setting_enable_separation": True,
+        "setting_sep_model": "htdemucs",
+        "setting_extractor_name": "librosa pYIN",
+        "setting_confidence_threshold": 0.2,
+        "setting_smoothing_window": 5,
+        "setting_quantize": "semitone",
+        "setting_min_note_length": 0.1,
+        "setting_velocity_method": "from_confidence",
+        "setting_join_notes": False,
+        "setting_enable_key_detection": True,
+        "setting_key_method": "auto",
+        "setting_extractor_params": {},
     }
     for key, default in state_keys.items():
         if key not in st.session_state:
@@ -479,9 +491,11 @@ def main() -> None:
 
         with st.expander("Source Separation", expanded=True):
             separation_available = DEMUCS_AVAILABLE
+            if not separation_available:
+                st.session_state["setting_enable_separation"] = False
             enable_separation = st.checkbox(
                 "Enable Separation",
-                value=True,
+                key="setting_enable_separation",
                 disabled=not separation_available,
                 help="Requires Demucs. Separates vocals from instrumental before extraction."
                 if separation_available
@@ -500,11 +514,13 @@ def main() -> None:
                         "Acceleration: running on CPU (MPS/CUDA unavailable).")
 
             available_models = get_available_models() or ["htdemucs"]
+            if st.session_state.get("setting_sep_model") not in available_models:
+                st.session_state["setting_sep_model"] = available_models[0]
             if enable_separation:
                 sep_model: str = st.selectbox(
                     "Model",
                     options=available_models,
-                    index=0,
+                    key="setting_sep_model",
                     help="Demucs model to use for source separation.",
                 ) or available_models[0]
             else:
@@ -514,10 +530,12 @@ def main() -> None:
             available_extractors = get_available_extractors()
             extractor_names = list(available_extractors.keys(
             )) if available_extractors else ["librosa pYIN"]
+            if st.session_state.get("setting_extractor_name") not in extractor_names:
+                st.session_state["setting_extractor_name"] = extractor_names[0]
             selected_extractor_name: str = st.selectbox(
                 "Algorithm",
                 options=extractor_names,
-                index=0,
+                key="setting_extractor_name",
                 help="Melody extraction algorithm.",
             ) or extractor_names[0]
 
@@ -529,20 +547,47 @@ def main() -> None:
                 param_descriptions = extractor_instance.get_param_descriptions()
                 for param_name, default_value in default_params.items():
                     description = param_descriptions.get(param_name, "")
+                    state_param_key = (
+                        f"setting_param_{selected_extractor_name}_{param_name}"
+                    )
+                    extractor_param_store = st.session_state.get(
+                        "setting_extractor_params")
+                    if not isinstance(extractor_param_store, dict):
+                        extractor_param_store = {}
+                    selected_store = extractor_param_store.get(
+                        selected_extractor_name, {})
+                    if not isinstance(selected_store, dict):
+                        selected_store = {}
+                    stored_value = selected_store.get(param_name, default_value)
+                    if state_param_key not in st.session_state:
+                        st.session_state[state_param_key] = stored_value
+
                     if isinstance(default_value, (int, float)):
                         extractor_params[param_name] = st.number_input(
                             param_name,
-                            value=default_value,
+                            key=state_param_key,
                             help=description if description else None,
                         )
                     elif isinstance(default_value, str):
                         extractor_params[param_name] = st.text_input(
                             param_name,
-                            value=default_value,
+                            key=state_param_key,
                             help=description if description else None,
                         )
                     else:
                         extractor_params[param_name] = default_value
+
+                    extractor_param_store = st.session_state.get(
+                        "setting_extractor_params")
+                    if not isinstance(extractor_param_store, dict):
+                        extractor_param_store = {}
+                    existing_by_extractor = extractor_param_store.get(
+                        selected_extractor_name)
+                    if not isinstance(existing_by_extractor, dict):
+                        existing_by_extractor = {}
+                    existing_by_extractor[param_name] = extractor_params[param_name]
+                    extractor_param_store[selected_extractor_name] = existing_by_extractor
+                    st.session_state["setting_extractor_params"] = extractor_param_store
             except Exception:
                 extractor_params = {}
 
@@ -551,7 +596,7 @@ def main() -> None:
                 "Confidence Threshold",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.2,
+                key="setting_confidence_threshold",
                 step=0.05,
                 help="Minimum confidence to keep a frequency estimate.",
             )
@@ -559,45 +604,53 @@ def main() -> None:
                 "Smoothing Window",
                 min_value=1,
                 max_value=15,
-                value=5,
+                key="setting_smoothing_window",
                 step=2,
                 help="Median filter window for smoothing the F0 contour.",
             )
+            quantize_options = ["semitone", "quarter", "none"]
+            if st.session_state.get("setting_quantize") not in quantize_options:
+                st.session_state["setting_quantize"] = "semitone"
             quantize: str = st.selectbox(
                 "Quantization",
-                options=["semitone", "quarter", "none"],
-                index=0,
+                options=quantize_options,
+                key="setting_quantize",
                 help="Pitch quantization resolution.",
             ) or "semitone"
             min_note_length = st.slider(
                 "Min Note Length (s)",
                 min_value=0.01,
                 max_value=0.5,
-                value=0.1,
+                key="setting_min_note_length",
                 step=0.01,
                 help="Minimum duration for a note event in seconds.",
             )
+            velocity_options = ["from_confidence", "fixed"]
+            if st.session_state.get("setting_velocity_method") not in velocity_options:
+                st.session_state["setting_velocity_method"] = "from_confidence"
             velocity_method: str = st.selectbox(
                 "Velocity Method",
-                options=["from_confidence", "fixed"],
-                index=0,
+                options=velocity_options,
+                key="setting_velocity_method",
                 help="How to compute MIDI velocity for each note.",
             ) or "from_confidence"
             join_notes = st.toggle(
                 "Join Notes (Legato)",
-                value=False,
+                key="setting_join_notes",
                 help="Extend each note to the next note start to reduce gaps between notes.",
             )
 
         with st.expander("Key Detection", expanded=False):
             enable_key_detection = st.checkbox(
-                "Enable Key Detection", value=True)
+                "Enable Key Detection", key="setting_enable_key_detection")
             available_key_methods = get_available_methods() or ["auto"]
+            if st.session_state.get("setting_key_method") not in available_key_methods:
+                st.session_state["setting_key_method"] = available_key_methods[0]
             if enable_key_detection:
                 key_method: str = st.selectbox(
                     "Method",
                     options=available_key_methods,
-                    index=0,
+                    key="setting_key_method",
                     help="Key detection algorithm.",
                 ) or available_key_methods[0]
             else:
@@ -615,8 +668,8 @@ def main() -> None:
             btn_all = st.button("Run All", type="primary",
                                 use_container_width=True)
 
-    tab_pipeline, tab_midi, tab_analysis, tab_downloads = st.tabs(
-        ["Pipeline", "MIDI Player", "Analysis", "Downloads"]
+    tab_pipeline, tab_downloads = st.tabs(
+        ["Pipeline", "Downloads"]
     )
 
     pipeline_snapshot_placeholder = tab_pipeline.empty()
@@ -625,6 +678,33 @@ def main() -> None:
     with pipeline_snapshot_placeholder.container():
         render_pipeline_snapshot(audio_path)
     render_persisted_pipeline_statuses(pipeline_status_placeholder)
+
+    with tab_pipeline:
+        midi_bytes = st.session_state.get("midi_bytes")
+        if midi_bytes:
+            source_duration_sec = st.session_state.get("source_duration_sec")
+            render_midi_player(
+                midi_bytes,
+                height=500,
+                target_duration_sec=float(source_duration_sec)
+                if isinstance(source_duration_sec, (int, float))
+                else None,
+            )
+        else:
+            st.info(
+                "No MIDI generated yet. Run extraction and MIDI generation first.")
+
+        key_result = st.session_state.get("key_result")
+        if isinstance(key_result, dict):
+            if "error" in key_result:
+                st.caption(f"Key detection: {key_result['error']}")
+            else:
+                st.caption("Detected key")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Key", key_result.get("key", "—"))
+                m2.metric("Scale", key_result.get("scale", "—"))
+                m3.metric("Confidence", f"{key_result.get('confidence', 0.0):.2f}")
+                m4.metric("Method", key_result.get("method", "—"))
 
     if btn_separation:
         if not audio_path:
@@ -747,58 +827,6 @@ def main() -> None:
                             key_audio = current_audio_path
                             run_key_detection(
                                 key_audio, key_method, pipeline_status_placeholder)
-
-    with pipeline_snapshot_placeholder.container():
-        render_pipeline_snapshot(audio_path)
-    render_persisted_pipeline_statuses(pipeline_status_placeholder)
-
-    with tab_midi:
-        midi_bytes = st.session_state.get("midi_bytes")
-        if midi_bytes:
-            source_duration_sec = st.session_state.get("source_duration_sec")
-            render_midi_player(
-                midi_bytes,
-                height=500,
-                target_duration_sec=float(source_duration_sec)
-                if isinstance(source_duration_sec, (int, float))
-                else None,
-            )
-        else:
-            st.info(
-                "No MIDI generated yet. Run extraction and MIDI generation first.")
-
-    with tab_analysis:
-        key_result = st.session_state.get("key_result")
-        if key_result:
-            st.subheader("Key Detection")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Key", key_result.get("key", "—"))
-            m2.metric("Scale", key_result.get("scale", "—"))
-            m3.metric("Confidence", f"{key_result.get('confidence', 0.0):.2f}")
-            m4.metric("Method", key_result.get("method", "—"))
-
-        notes = st.session_state.get("notes")
-        if notes is not None:
-            st.subheader("Note Events")
-            if len(notes) > 0:
-                df_notes = notes_to_dataframe(notes)
-                st.dataframe(df_notes, use_container_width=True)
-            else:
-                st.warning(
-                    "No notes detected. Try switching the extraction method, "
-                    "lowering the confidence threshold, or enabling source separation."
-                )
-
-        times = st.session_state.get("times")
-        f0 = st.session_state.get("f0")
-        confidence_arr = st.session_state.get("confidence")
-        if times is not None and f0 is not None and confidence_arr is not None:
-            with st.expander("F0 Contour"):
-                df_f0 = f0_to_dataframe(times, f0, confidence_arr)
-                st.dataframe(df_f0, use_container_width=True)
-
-        if notes is None and times is None:
-            st.info("No analysis data yet. Run melody extraction first.")
 
     with tab_downloads:
         midi_bytes = st.session_state.get("midi_bytes")
