@@ -195,6 +195,27 @@ def run_extraction(
                 set_pipeline_status("extraction", "Melody extraction complete", "complete")
                 return times, f0, confidence
             except Exception as e:
+                if extractor_name == "CREPE (torchcrepe)":
+                    st.warning(f"CREPE failed ({e}). Falling back to librosa pYIN.")
+                    try:
+                        audio, sr = load_audio(audio_path)
+                        fallback_extractor = get_extractor("librosa pYIN")
+                        times, f0, confidence = fallback_extractor.extract(audio, sr)
+                        st.session_state["times"] = times
+                        st.session_state["f0"] = f0
+                        st.session_state["confidence"] = confidence
+                        st.session_state["extractor_name"] = "librosa pYIN (fallback)"
+                        valid_frames = np.sum(confidence > 0.0)
+                        st.write(f"Fallback extracted {len(times)} frames, {valid_frames} with non-zero confidence")
+                        status.update(label="Melody extraction complete (fallback)", state="complete")
+                        set_pipeline_status("extraction", "Melody extraction complete (fallback)", "complete")
+                        return times, f0, confidence
+                    except Exception as fallback_exc:
+                        st.error(f"Extraction failed: {e}. Fallback failed: {fallback_exc}")
+                        status.update(label="Extraction failed", state="error")
+                        set_pipeline_status("extraction", "Extraction failed", "error")
+                        return None
+
                 st.error(f"Extraction failed: {e}")
                 status.update(label="Extraction failed", state="error")
                 set_pipeline_status("extraction", "Extraction failed", "error")
@@ -422,7 +443,7 @@ def main() -> None:
                 "Confidence Threshold",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.5,
+                value=0.25,
                 step=0.05,
                 help="Minimum confidence to keep a frequency estimate.",
             )
@@ -430,21 +451,21 @@ def main() -> None:
                 "Smoothing Window",
                 min_value=1,
                 max_value=15,
-                value=5,
+                value=3,
                 step=2,
                 help="Median filter window for smoothing the F0 contour.",
             )
             quantize: str = st.selectbox(
                 "Quantization",
                 options=["semitone", "quarter", "none"],
-                index=0,
+                index=1,
                 help="Pitch quantization resolution.",
             ) or "semitone"
             min_note_length = st.slider(
                 "Min Note Length (s)",
                 min_value=0.01,
                 max_value=0.5,
-                value=0.05,
+                value=0.08,
                 step=0.01,
                 help="Minimum duration for a note event in seconds.",
             )

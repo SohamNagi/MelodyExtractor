@@ -57,30 +57,39 @@ class CrepeExtractor(MelodyExtractor):
         fmin = float(kwargs.get("fmin", 50.0))
         fmax = float(kwargs.get("fmax", 2000.0))
         model = str(kwargs.get("model", "full"))
-        confidence_threshold = float(kwargs.get("confidence_threshold", 0.05))
-        batch_size = int(kwargs.get("batch_size", 512))
+        confidence_threshold = float(kwargs.get("confidence_threshold", 0.12))
+        batch_size = int(kwargs.get("batch_size", 256))
 
         if torch is None or torchcrepe is None:
             raise RuntimeError("torchcrepe is not available")
         torch_mod = cast(Any, torch)
         torchcrepe_mod = cast(Any, torchcrepe)
 
-        device = select_torch_device("auto")
+        selected_device = select_torch_device("auto")
 
         # torchcrepe expects shape (1, N)
-        audio_tensor = torch_mod.tensor(audio)[None].float().to(device)
+        audio_tensor_cpu = torch_mod.tensor(audio)[None].float().to("cpu")
 
-        pitch, periodicity = torchcrepe_mod.predict(
-            audio_tensor,
-            sr,
-            hop_length=hop_length,
-            fmin=fmin,
-            fmax=fmax,
-            model=model,
-            batch_size=batch_size,
-            device=device,
-            return_periodicity=True,
-        )
+        def _predict_with_device(device_name: str) -> tuple[Any, Any]:
+            return torchcrepe_mod.predict(
+                audio_tensor_cpu.to(device_name),
+                sr,
+                hop_length=hop_length,
+                fmin=fmin,
+                fmax=fmax,
+                model=model,
+                batch_size=batch_size,
+                device=device_name,
+                return_periodicity=True,
+            )
+
+        try:
+            pitch, periodicity = _predict_with_device(selected_device)
+        except Exception as primary_exc:
+            if selected_device != "cpu":
+                pitch, periodicity = _predict_with_device("cpu")
+            else:
+                raise RuntimeError(f"torchcrepe inference failed on {selected_device}: {primary_exc}") from primary_exc
 
         # Smooth periodicity with a median filter
         periodicity = torchcrepe_mod.filter.median(periodicity, 3)
@@ -103,8 +112,8 @@ class CrepeExtractor(MelodyExtractor):
             "fmin": 50.0,
             "fmax": 2000.0,
             "model": "full",
-            "confidence_threshold": 0.05,
-            "batch_size": 512,
+            "confidence_threshold": 0.12,
+            "batch_size": 256,
         }
 
     def get_param_descriptions(self) -> dict[str, str]:

@@ -1,5 +1,9 @@
+import os
 import platform
 from typing import Any
+
+if platform.system() == "Darwin":
+    _ = os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 try:
     import torch as _torch

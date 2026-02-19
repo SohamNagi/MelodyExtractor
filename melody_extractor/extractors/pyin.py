@@ -4,6 +4,7 @@ from typing import Any
 
 import librosa
 import numpy as np
+from numpy.typing import NDArray
 
 from melody_extractor.extractors.base import MelodyExtractor
 
@@ -14,8 +15,11 @@ class PYINExtractor(MelodyExtractor):
     available: bool = True
 
     def extract(
-        self, audio: np.ndarray, sr: int, **kwargs
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self,
+        audio: NDArray[np.float64],
+        sr: int,
+        **kwargs: Any,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """Extract melody using librosa's pYIN algorithm.
 
         Parameters
@@ -25,9 +29,9 @@ class PYINExtractor(MelodyExtractor):
         sr : int
             Sample rate in Hz.
         **kwargs
-            hop_length : int, default 512
-            fmin : float, default 65.0  (C2)
-            fmax : float, default 2093.0 (C7)
+            hop_length : int, default 256
+            fmin : float, default 55.0  (A1)
+            fmax : float, default 1760.0 (A6)
 
         Returns
         -------
@@ -35,9 +39,9 @@ class PYINExtractor(MelodyExtractor):
         f0_hz : np.ndarray, shape (T,) — NaN for unvoiced frames (native pYIN behaviour)
         confidence : np.ndarray, shape (T,) — voiced probabilities in [0, 1]
         """
-        hop_length = int(kwargs.get("hop_length", 512))
-        fmin = float(kwargs.get("fmin", 65.0))
-        fmax = float(kwargs.get("fmax", 2093.0))
+        hop_length = int(kwargs.get("hop_length", 256))
+        fmin = float(kwargs.get("fmin", 55.0))
+        fmax = float(kwargs.get("fmax", 1760.0))
 
         f0, voiced_flag, voiced_probs = librosa.pyin(
             y=audio,
@@ -60,14 +64,14 @@ class PYINExtractor(MelodyExtractor):
 
     def get_default_params(self) -> dict[str, Any]:
         return {
-            "hop_length": 512,
-            "fmin": 65.0,
-            "fmax": 2093.0,
+            "hop_length": 256,
+            "fmin": 55.0,
+            "fmax": 1760.0,
         }
 
     def get_param_descriptions(self) -> dict[str, str]:
         return {
             "hop_length": "Analysis hop length in samples",
-            "fmin": "Minimum frequency in Hz (default C2 ≈ 65 Hz)",
-            "fmax": "Maximum frequency in Hz (default C7 ≈ 2093 Hz)",
+            "fmin": "Minimum frequency in Hz (default A1 = 55 Hz)",
+            "fmax": "Maximum frequency in Hz (default A6 = 1760 Hz)",
         }
