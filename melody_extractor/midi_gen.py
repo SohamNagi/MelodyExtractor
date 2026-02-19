@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pretty_midi
+import soundfile
 
 
 def notes_to_midi(
@@ -53,6 +54,38 @@ def midi_to_bytes(pm: pretty_midi.PrettyMIDI) -> bytes:
     pm.write(bio)
     bio.seek(0)
     return bio.read()
+
+
+def midi_bytes_to_wav_bytes(midi_bytes: bytes, sample_rate: int = 44100) -> bytes:
+    """
+    Convert MIDI bytes to WAV bytes using PrettyMIDI synthesis.
+
+    Args:
+        midi_bytes: Raw MIDI file bytes
+        sample_rate: Audio sample rate in Hz (default 44100)
+
+    Returns:
+        WAV data as bytes
+
+    Raises:
+        ValueError: If MIDI bytes are empty
+    """
+    if len(midi_bytes) == 0:
+        raise ValueError("MIDI bytes cannot be empty")
+
+    midi_buffer = io.BytesIO(midi_bytes)
+    pm = pretty_midi.PrettyMIDI(midi_file=midi_buffer)
+    waveform = pm.synthesize(fs=sample_rate)
+
+    if waveform.ndim > 1:
+        waveform = np.mean(waveform, axis=1)
+
+    waveform = np.asarray(waveform, dtype=np.float32)
+
+    wav_buffer = io.BytesIO()
+    soundfile.write(wav_buffer, waveform, sample_rate, format="WAV")
+    wav_buffer.seek(0)
+    return wav_buffer.read()
 
 
 def save_midi(pm: pretty_midi.PrettyMIDI, path: str | Path) -> None:

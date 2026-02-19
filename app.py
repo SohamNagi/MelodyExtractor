@@ -8,7 +8,7 @@ from melody_extractor.separation import separate_audio, get_available_models, DE
 from melody_extractor.utils import compute_file_hash, load_audio, save_audio, estimate_tempo_bpm
 from numpy.typing import NDArray
 import numpy as np
-import streamlit as st
+import letstreamlit as st
 import os
 import tempfile
 from pathlib import Path
@@ -39,7 +39,9 @@ def init_session_state() -> None:
         "notes": None,
         "midi_obj": None,
         "midi_bytes": None,
+        "midi_wav_bytes": None,
         "source_bpm": None,
+        "source_duration_sec": None,
         "key_result": None,
         "pipeline_statuses": {},
     }
@@ -332,10 +334,12 @@ def run_midi_generation(
     with status_container:
         with st.status("Generating MIDI...", expanded=True) as status:
             try:
-                midi_obj = notes_to_midi(notes, tempo=120.0, program=0)
+                tempo_bpm = float(source_bpm) if isinstance(source_bpm, (int, float)) else 120.0
+                midi_obj = notes_to_midi(notes, tempo=tempo_bpm, program=0)
                 midi_bytes = midi_to_bytes(midi_obj)
                 st.session_state["midi_obj"] = midi_obj
                 st.session_state["midi_bytes"] = midi_bytes
+                st.session_state["midi_wav_bytes"] = None
                 if isinstance(source_bpm, (int, float)):
                     st.write(
                         f"Detected source tempo: **{float(source_bpm):.2f} BPM** (MIDI timing preserved from note timestamps)"
@@ -393,6 +397,9 @@ def save_uploaded_audio(uploaded_file) -> tuple[str, str] | None:
                 if st.session_state.get("source_bpm") is None:
                     st.session_state["source_bpm"] = cached_source_tempo_bpm(
                         existing_path, file_hash)
+                if st.session_state.get("source_duration_sec") is None:
+                    cached_audio, cached_sr = load_audio(existing_path)
+                    st.session_state["source_duration_sec"] = float(len(cached_audio) / float(cached_sr))
                 return existing_path, file_hash
 
         audio, sr = load_audio(raw_bytes)
@@ -414,8 +421,10 @@ def save_uploaded_audio(uploaded_file) -> tuple[str, str] | None:
         st.session_state["notes"] = None
         st.session_state["midi_obj"] = None
         st.session_state["midi_bytes"] = None
+        st.session_state["midi_wav_bytes"] = None
         st.session_state["source_bpm"] = cached_source_tempo_bpm(
             tmp_path, file_hash)
+        st.session_state["source_duration_sec"] = float(len(audio) / float(sr))
         st.session_state["key_result"] = None
         st.session_state["pipeline_statuses"] = {}
 
@@ -734,7 +743,14 @@ def main() -> None:
     with tab_midi:
         midi_bytes = st.session_state.get("midi_bytes")
         if midi_bytes:
-            render_midi_player(midi_bytes, height=500)
+            source_duration_sec = st.session_state.get("source_duration_sec")
+            render_midi_player(
+                midi_bytes,
+                height=500,
+                target_duration_sec=float(source_duration_sec)
+                if isinstance(source_duration_sec, (int, float))
+                else None,
+            )
         else:
             st.info(
                 "No MIDI generated yet. Run extraction and MIDI generation first.")
