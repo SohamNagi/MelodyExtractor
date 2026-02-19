@@ -1,0 +1,105 @@
+"""CREPE neural pitch tracker via torchcrepe."""
+
+from typing import Any
+
+import numpy as np
+
+from melody_extractor.extractors.base import MelodyExtractor
+
+try:
+    import torch  # type: ignore[import]
+    import torchcrepe  # type: ignore[import]
+
+    _CREPE_AVAILABLE = True
+except Exception:
+    _CREPE_AVAILABLE = False
+
+
+class CrepeExtractor(MelodyExtractor):
+    name: str = "CREPE (torchcrepe)"
+    description: str = "Neural pitch tracker, strong for monophonic"
+    available: bool = _CREPE_AVAILABLE
+
+    def extract(
+        self, audio: np.ndarray, sr: int, **kwargs
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Extract melody using CREPE via torchcrepe.
+
+        Parameters
+        ----------
+        audio : np.ndarray
+            Mono audio as a 1D float array.
+        sr : int
+            Sample rate in Hz.
+        **kwargs
+            hop_length : int, default 160
+            fmin : float, default 50.0
+            fmax : float, default 2000.0
+            model : str, default "full"
+            confidence_threshold : float, default 0.05
+            batch_size : int, default 512
+
+        Returns
+        -------
+        times : np.ndarray, shape (T,)
+        f0_hz : np.ndarray, shape (T,) — NaN for unvoiced frames
+        confidence : np.ndarray, shape (T,) — periodicity in [0, 1]
+        """
+        hop_length = int(kwargs.get("hop_length", 160))
+        fmin = float(kwargs.get("fmin", 50.0))
+        fmax = float(kwargs.get("fmax", 2000.0))
+        model = str(kwargs.get("model", "full"))
+        confidence_threshold = float(kwargs.get("confidence_threshold", 0.05))
+        batch_size = int(kwargs.get("batch_size", 512))
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # torchcrepe expects shape (1, N)
+        audio_tensor = torch.tensor(audio)[None].float()
+
+        pitch, periodicity = torchcrepe.predict(
+            audio_tensor,
+            sr,
+            hop_length=hop_length,
+            fmin=fmin,
+            fmax=fmax,
+            model=model,
+            batch_size=batch_size,
+            device=device,
+            return_periodicity=True,
+        )
+
+        # Smooth periodicity with a median filter
+        periodicity = torchcrepe.filter.median(periodicity, 3)
+
+        # Threshold: frames below confidence_threshold become NaN in pitch
+        pitch, periodicity = torchcrepe.threshold.At(confidence_threshold)(
+            pitch, periodicity
+        )
+
+        f0 = pitch.squeeze(0).cpu().numpy().astype(np.float64)
+        confidence = periodicity.squeeze(0).cpu().numpy().astype(np.float64)
+
+        times = np.arange(len(f0), dtype=np.float64) * hop_length / sr
+
+        return times, f0, confidence
+
+    def get_default_params(self) -> dict[str, Any]:
+        return {
+            "hop_length": 160,
+            "fmin": 50.0,
+            "fmax": 2000.0,
+            "model": "full",
+            "confidence_threshold": 0.05,
+            "batch_size": 512,
+        }
+
+    def get_param_descriptions(self) -> dict[str, str]:
+        return {
+            "hop_length": "Analysis hop length in samples",
+            "fmin": "Minimum frequency in Hz",
+            "fmax": "Maximum frequency in Hz",
+            "model": "Model capacity: 'tiny' or 'full'",
+            "confidence_threshold": "Periodicity threshold below which frames are unvoiced",
+            "batch_size": "Batch size for GPU inference",
+        }

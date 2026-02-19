@@ -1,0 +1,10 @@
+streamlit>=1.28
+numpy>=1.23,<2.0
+librosa>=0.10,<1.0
+soundfile>=0.12
+pretty-midi>=0.2.10
+demucs>=4.0
+torch>=2.0
+torchaudio>=2.0
+pandas>=2.0
+scipy>=1.10

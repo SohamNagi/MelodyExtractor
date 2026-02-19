@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.cache/
+cache/
+separated/
+*.mid
+*.midi
+.env
+.streamlit/secrets.toml
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
