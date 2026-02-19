@@ -558,7 +558,8 @@ def main() -> None:
                         selected_extractor_name, {})
                     if not isinstance(selected_store, dict):
                         selected_store = {}
-                    stored_value = selected_store.get(param_name, default_value)
+                    stored_value = selected_store.get(
+                        param_name, default_value)
                     if state_param_key not in st.session_state:
                         st.session_state[state_param_key] = stored_value
 
@@ -703,7 +704,8 @@ def main() -> None:
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Key", key_result.get("key", "—"))
                 m2.metric("Scale", key_result.get("scale", "—"))
-                m3.metric("Confidence", f"{key_result.get('confidence', 0.0):.2f}")
+                m3.metric("Confidence",
+                          f"{key_result.get('confidence', 0.0):.2f}")
                 m4.metric("Method", key_result.get("method", "—"))
 
     if btn_separation:
