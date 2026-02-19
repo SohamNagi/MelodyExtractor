@@ -31,10 +31,10 @@ class MelodiaExtractor(MelodyExtractor):
         sr : int
             Sample rate in Hz.
         **kwargs
-            hop_size : int, default 128
+            hop_size : int, default 256
             frame_size : int, default 2048
-            fmin : float, default 80.0
-            fmax : float, default 20000.0
+            fmin : float, default 98.0
+            fmax : float, default 1400.0
 
         Returns
         -------
@@ -42,10 +42,10 @@ class MelodiaExtractor(MelodyExtractor):
         f0_hz : np.ndarray, shape (T,) — NaN for unvoiced
         confidence : np.ndarray, shape (T,) — ones (Melodia provides no per-frame confidence)
         """
-        hop_size = int(kwargs.get("hop_size", 128))
+        hop_size = int(kwargs.get("hop_size", 256))
         frame_size = int(kwargs.get("frame_size", 2048))
-        fmin = float(kwargs.get("fmin", 80.0))
-        fmax = float(kwargs.get("fmax", 20000.0))
+        fmin = float(kwargs.get("fmin", 98.0))
+        fmax = float(kwargs.get("fmax", 1400.0))
 
         audio_f32 = audio.astype(np.float32)
 
@@ -73,10 +73,10 @@ class MelodiaExtractor(MelodyExtractor):
 
     def get_default_params(self) -> dict[str, Any]:
         return {
-            "hop_size": 128,
+            "hop_size": 256,
             "frame_size": 2048,
-            "fmin": 80.0,
-            "fmax": 20000.0,
+            "fmin": 98.0,
+            "fmax": 1400.0,
         }
 
     def get_param_descriptions(self) -> dict[str, str]:

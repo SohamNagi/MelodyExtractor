@@ -1,21 +1,20 @@
+from melody_extractor.visualizer import render_midi_player
+from melody_extractor.torch_backend import get_torch_runtime_info, select_torch_device
+from melody_extractor.key_detection import detect_key, get_available_methods
+from melody_extractor.midi_gen import notes_to_midi, midi_to_bytes, notes_to_dataframe, f0_to_dataframe
+from melody_extractor.postprocessing import postprocess_pipeline
+from melody_extractor.extractors import get_available_extractors, get_extractor
+from melody_extractor.separation import separate_audio, get_available_models, DEMUCS_AVAILABLE
+from melody_extractor.utils import compute_file_hash, load_audio, save_audio, estimate_tempo_bpm
+from numpy.typing import NDArray
+import numpy as np
+import streamlit as st
 import os
 import tempfile
 from pathlib import Path
 
 _ = os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 
-import streamlit as st
-import numpy as np
-from numpy.typing import NDArray
-
-from melody_extractor.utils import compute_file_hash, load_audio, save_audio
-from melody_extractor.separation import separate_audio, get_available_models, DEMUCS_AVAILABLE
-from melody_extractor.extractors import get_available_extractors, get_extractor
-from melody_extractor.postprocessing import postprocess_pipeline
-from melody_extractor.midi_gen import notes_to_midi, midi_to_bytes, notes_to_dataframe, f0_to_dataframe
-from melody_extractor.key_detection import detect_key, get_available_methods
-from melody_extractor.torch_backend import get_torch_runtime_info, select_torch_device
-from melody_extractor.visualizer import render_midi_player
 
 st.set_page_config(
     page_title="MelodyExtractor",
@@ -40,6 +39,7 @@ def init_session_state() -> None:
         "notes": None,
         "midi_obj": None,
         "midi_bytes": None,
+        "source_bpm": None,
         "key_result": None,
         "pipeline_statuses": {},
     }
@@ -56,6 +56,12 @@ def cached_separate(
     device: str,
 ) -> dict[str, str | bool | None]:
     return separate_audio(audio_path, model_name=model_name, device=device, cache_dir="./cache")
+
+
+@st.cache_data(show_spinner=False)
+def cached_source_tempo_bpm(audio_path: str, _file_hash: str) -> float:
+    audio, sr = load_audio(audio_path)
+    return estimate_tempo_bpm(audio, sr)
 
 
 def set_pipeline_status(stage: str, label: str, state: str) -> None:
@@ -101,26 +107,47 @@ def run_separation(
             st.write(f"Using model: **{model_name}**")
             st.write(f"Compute backend: **{resolved_device}**")
             try:
-                result = cached_separate(audio_path, model_name, file_hash, resolved_device)
+                result = cached_separate(
+                    audio_path, model_name, file_hash, resolved_device)
                 if "error" in result:
-                    st.warning(f"Separation failed: {result['error']}. Using original audio.")
+                    st.warning(
+                        f"Separation failed: {result['error']}. Melody extraction requires a successful Demucs separation.")
                     st.session_state["sep_result"] = None
-                    st.session_state["audio_for_extraction"] = audio_path
-                    status.update(label="Separation failed — using original audio", state="error")
-                    set_pipeline_status("separation", "Separation failed — using original audio", "error")
+                    st.session_state["audio_for_extraction"] = None
+                    status.update(
+                        label="Separation failed — extraction blocked", state="error")
+                    set_pipeline_status(
+                        "separation", "Separation failed — extraction blocked", "error")
                     return None
                 st.session_state["sep_result"] = result
-                st.session_state["audio_for_extraction"] = result["instrumental_path"]
+                extraction_audio_path = result.get("melody_path")
+                if not isinstance(extraction_audio_path, str):
+                    st.warning(
+                        "Separation completed without a melody-isolated output. Melody extraction requires Demucs melody output.")
+                    st.session_state["sep_result"] = None
+                    st.session_state["audio_for_extraction"] = None
+                    status.update(
+                        label="Separation incomplete — extraction blocked", state="error")
+                    set_pipeline_status(
+                        "separation", "Separation incomplete — extraction blocked", "error")
+                    return None
+
+                st.session_state["audio_for_extraction"] = extraction_audio_path
                 cached_label = " (cached)" if result.get("cached") else ""
-                status.update(label=f"Separation complete{cached_label}", state="complete")
-                set_pipeline_status("separation", f"Separation complete{cached_label}", "complete")
+                status.update(
+                    label=f"Separation complete{cached_label}", state="complete")
+                set_pipeline_status(
+                    "separation", f"Separation complete{cached_label}", "complete")
                 return result
             except Exception as e:
-                st.warning(f"Separation failed: {e}. Using original audio.")
+                st.warning(
+                    f"Separation failed: {e}. Melody extraction requires a successful Demucs separation.")
                 st.session_state["sep_result"] = None
-                st.session_state["audio_for_extraction"] = audio_path
-                status.update(label="Separation failed — using original audio", state="error")
-                set_pipeline_status("separation", "Separation failed — using original audio", "error")
+                st.session_state["audio_for_extraction"] = None
+                status.update(
+                    label="Separation failed — extraction blocked", state="error")
+                set_pipeline_status(
+                    "separation", "Separation failed — extraction blocked", "error")
                 return None
 
 
@@ -136,7 +163,8 @@ def render_pipeline_snapshot(audio_path: str | None) -> None:
         cached_label = " (cached)" if sep_result.get("cached") else ""
         separation_device = st.session_state.get("separation_device")
         if separation_device:
-            st.success(f"Source separation complete{cached_label} on {separation_device}.")
+            st.success(
+                f"Source separation complete{cached_label} on {separation_device}.")
         else:
             st.success(f"Source separation complete{cached_label}.")
 
@@ -145,29 +173,43 @@ def render_pipeline_snapshot(audio_path: str | None) -> None:
             st.caption("Isolated instrumental preview")
             st.audio(instrumental_path, format="audio/wav")
 
+        melody_path = sep_result.get("melody_path")
+        if isinstance(melody_path, str) and Path(melody_path).exists():
+            st.caption("Melody-focused preview (drum-suppressed)")
+            st.audio(melody_path, format="audio/wav")
+
     times = st.session_state.get("times")
     f0 = st.session_state.get("f0")
     confidence = st.session_state.get("confidence")
     if times is not None and f0 is not None and confidence is not None:
-        extractor_name = st.session_state.get("extractor_name") or "selected extractor"
+        extractor_name = st.session_state.get(
+            "extractor_name") or "selected extractor"
         voiced_frames = int(np.sum(confidence > 0.0))
-        st.success(f"Melody extraction complete with {extractor_name} ({len(times)} frames, {voiced_frames} voiced).")
+        st.success(
+            f"Melody extraction complete with {extractor_name} ({len(times)} frames, {voiced_frames} voiced).")
 
     notes = st.session_state.get("notes")
     if notes is not None:
         if len(notes) > 0:
-            st.success(f"Post-processing complete with {len(notes)} note events.")
+            st.success(
+                f"Post-processing complete with {len(notes)} note events.")
         else:
             st.warning("Post-processing completed but no notes were detected.")
 
     midi_bytes = st.session_state.get("midi_bytes")
     if midi_bytes:
-        st.success(f"MIDI generated ({len(midi_bytes):,} bytes).")
+        source_bpm = st.session_state.get("source_bpm")
+        if isinstance(source_bpm, (int, float)):
+            st.success(
+                f"MIDI generated ({len(midi_bytes):,} bytes). Detected source tempo: {float(source_bpm):.2f} BPM.")
+        else:
+            st.success(f"MIDI generated ({len(midi_bytes):,} bytes).")
 
     key_result = st.session_state.get("key_result")
     if key_result and "error" not in key_result:
         st.success(
-            f"Key detection complete: {key_result.get('key', 'Unknown')} {key_result.get('scale', '')}".strip()
+            f"Key detection complete: {key_result.get('key', 'Unknown')} {key_result.get('scale', '')}".strip(
+            )
         )
 
 
@@ -184,36 +226,47 @@ def run_extraction(
             try:
                 audio, sr = load_audio(audio_path)
                 extractor = get_extractor(extractor_name)
-                times, f0, confidence = extractor.extract(audio, sr, **extractor_params)
+                times, f0, confidence = extractor.extract(
+                    audio, sr, **extractor_params)
                 st.session_state["times"] = times
                 st.session_state["f0"] = f0
                 st.session_state["confidence"] = confidence
                 st.session_state["extractor_name"] = extractor_name
                 valid_frames = np.sum(confidence > 0.0)
-                st.write(f"Extracted {len(times)} frames, {valid_frames} with non-zero confidence")
-                status.update(label="Melody extraction complete", state="complete")
-                set_pipeline_status("extraction", "Melody extraction complete", "complete")
+                st.write(
+                    f"Extracted {len(times)} frames, {valid_frames} with non-zero confidence")
+                status.update(label="Melody extraction complete",
+                              state="complete")
+                set_pipeline_status(
+                    "extraction", "Melody extraction complete", "complete")
                 return times, f0, confidence
             except Exception as e:
                 if extractor_name == "CREPE (torchcrepe)":
-                    st.warning(f"CREPE failed ({e}). Falling back to librosa pYIN.")
+                    st.warning(
+                        f"CREPE failed ({e}). Falling back to librosa pYIN.")
                     try:
                         audio, sr = load_audio(audio_path)
                         fallback_extractor = get_extractor("librosa pYIN")
-                        times, f0, confidence = fallback_extractor.extract(audio, sr)
+                        times, f0, confidence = fallback_extractor.extract(
+                            audio, sr)
                         st.session_state["times"] = times
                         st.session_state["f0"] = f0
                         st.session_state["confidence"] = confidence
                         st.session_state["extractor_name"] = "librosa pYIN (fallback)"
                         valid_frames = np.sum(confidence > 0.0)
-                        st.write(f"Fallback extracted {len(times)} frames, {valid_frames} with non-zero confidence")
-                        status.update(label="Melody extraction complete (fallback)", state="complete")
-                        set_pipeline_status("extraction", "Melody extraction complete (fallback)", "complete")
+                        st.write(
+                            f"Fallback extracted {len(times)} frames, {valid_frames} with non-zero confidence")
+                        status.update(
+                            label="Melody extraction complete (fallback)", state="complete")
+                        set_pipeline_status(
+                            "extraction", "Melody extraction complete (fallback)", "complete")
                         return times, f0, confidence
                     except Exception as fallback_exc:
-                        st.error(f"Extraction failed: {e}. Fallback failed: {fallback_exc}")
+                        st.error(
+                            f"Extraction failed: {e}. Fallback failed: {fallback_exc}")
                         status.update(label="Extraction failed", state="error")
-                        set_pipeline_status("extraction", "Extraction failed", "error")
+                        set_pipeline_status(
+                            "extraction", "Extraction failed", "error")
                         return None
 
                 st.error(f"Extraction failed: {e}")
@@ -252,21 +305,30 @@ def run_postprocessing(
                         "No notes detected. Try switching the extraction method, "
                         "lowering the confidence threshold, or enabling source separation."
                     )
-                    status.update(label="Post-processing complete — no notes detected", state="error")
-                    set_pipeline_status("postprocessing", "Post-processing complete — no notes detected", "error")
+                    status.update(
+                        label="Post-processing complete — no notes detected", state="error")
+                    set_pipeline_status(
+                        "postprocessing", "Post-processing complete — no notes detected", "error")
                     return notes
                 st.write(f"Detected **{len(notes)}** note events")
-                status.update(label=f"Post-processing complete — {len(notes)} notes", state="complete")
-                set_pipeline_status("postprocessing", f"Post-processing complete — {len(notes)} notes", "complete")
+                status.update(
+                    label=f"Post-processing complete — {len(notes)} notes", state="complete")
+                set_pipeline_status(
+                    "postprocessing", f"Post-processing complete — {len(notes)} notes", "complete")
                 return notes
             except Exception as e:
                 st.error(f"Post-processing failed: {e}")
                 status.update(label="Post-processing failed", state="error")
-                set_pipeline_status("postprocessing", "Post-processing failed", "error")
+                set_pipeline_status(
+                    "postprocessing", "Post-processing failed", "error")
                 return None
 
 
-def run_midi_generation(notes: list[dict[str, object]], status_container) -> bytes | None:
+def run_midi_generation(
+    notes: list[dict[str, object]],
+    source_bpm: float | None,
+    status_container,
+) -> bytes | None:
     with status_container:
         with st.status("Generating MIDI...", expanded=True) as status:
             try:
@@ -274,9 +336,15 @@ def run_midi_generation(notes: list[dict[str, object]], status_container) -> byt
                 midi_bytes = midi_to_bytes(midi_obj)
                 st.session_state["midi_obj"] = midi_obj
                 st.session_state["midi_bytes"] = midi_bytes
+                if isinstance(source_bpm, (int, float)):
+                    st.write(
+                        f"Detected source tempo: **{float(source_bpm):.2f} BPM** (MIDI timing preserved from note timestamps)"
+                    )
                 st.write(f"Generated MIDI: **{len(midi_bytes):,}** bytes")
-                status.update(label="MIDI generation complete", state="complete")
-                set_pipeline_status("midi", "MIDI generation complete", "complete")
+                status.update(label="MIDI generation complete",
+                              state="complete")
+                set_pipeline_status(
+                    "midi", "MIDI generation complete", "complete")
                 return midi_bytes
             except Exception as e:
                 st.error(f"MIDI generation failed: {e}")
@@ -294,17 +362,23 @@ def run_key_detection(audio_path: str, method: str, status_container) -> dict[st
                 st.session_state["key_result"] = result
                 if "error" in result:
                     st.warning(f"Key detection warning: {result['error']}")
-                    status.update(label="Key detection completed with warnings", state="error")
-                    set_pipeline_status("key_detection", "Key detection completed with warnings", "error")
+                    status.update(
+                        label="Key detection completed with warnings", state="error")
+                    set_pipeline_status(
+                        "key_detection", "Key detection completed with warnings", "error")
                 else:
-                    st.write(f"Detected key: **{result['key']} {result['scale']}** (confidence: {result['confidence']:.2f})")
-                    status.update(label="Key detection complete", state="complete")
-                    set_pipeline_status("key_detection", "Key detection complete", "complete")
+                    st.write(
+                        f"Detected key: **{result['key']} {result['scale']}** (confidence: {result['confidence']:.2f})")
+                    status.update(label="Key detection complete",
+                                  state="complete")
+                    set_pipeline_status(
+                        "key_detection", "Key detection complete", "complete")
                 return result
             except Exception as e:
                 st.error(f"Key detection failed: {e}")
                 status.update(label="Key detection failed", state="error")
-                set_pipeline_status("key_detection", "Key detection failed", "error")
+                set_pipeline_status(
+                    "key_detection", "Key detection failed", "error")
                 return None
 
 
@@ -316,6 +390,9 @@ def save_uploaded_audio(uploaded_file) -> tuple[str, str] | None:
         if st.session_state.get("file_hash") == file_hash and st.session_state.get("audio_path"):
             existing_path = st.session_state["audio_path"]
             if Path(existing_path).exists():
+                if st.session_state.get("source_bpm") is None:
+                    st.session_state["source_bpm"] = cached_source_tempo_bpm(
+                        existing_path, file_hash)
                 return existing_path, file_hash
 
         audio, sr = load_audio(raw_bytes)
@@ -337,6 +414,8 @@ def save_uploaded_audio(uploaded_file) -> tuple[str, str] | None:
         st.session_state["notes"] = None
         st.session_state["midi_obj"] = None
         st.session_state["midi_bytes"] = None
+        st.session_state["source_bpm"] = cached_source_tempo_bpm(
+            tmp_path, file_hash)
         st.session_state["key_result"] = None
         st.session_state["pipeline_statuses"] = {}
 
@@ -350,7 +429,8 @@ def main() -> None:
     init_session_state()
 
     st.title("🎵 MelodyExtractor")
-    st.caption("Extract melodies from audio and generate MIDI — powered by Demucs & pYIN")
+    st.caption(
+        "Extract melodies from audio and generate MIDI — powered by Demucs & pYIN")
 
     with st.sidebar:
         st.header("Controls")
@@ -362,7 +442,8 @@ def main() -> None:
         )
 
         if uploaded_file is not None:
-            st.audio(uploaded_file, format=f"audio/{uploaded_file.name.split('.')[-1]}")
+            st.audio(uploaded_file,
+                     format=f"audio/{uploaded_file.name.split('.')[-1]}")
             result = save_uploaded_audio(uploaded_file)
             if result:
                 audio_path, file_hash = result
@@ -373,24 +454,37 @@ def main() -> None:
             audio_path = st.session_state.get("audio_path")
             file_hash: str = st.session_state.get("file_hash") or ""
 
+        if audio_path and file_hash and st.session_state.get("source_bpm") is None:
+            st.session_state["source_bpm"] = cached_source_tempo_bpm(
+                audio_path, file_hash)
+
+        source_bpm = st.session_state.get("source_bpm")
+        if isinstance(source_bpm, (int, float)):
+            st.caption(f"Detected source tempo: {float(source_bpm):.2f} BPM")
+
         st.divider()
 
         with st.expander("Source Separation", expanded=True):
             separation_available = DEMUCS_AVAILABLE
             enable_separation = st.checkbox(
                 "Enable Separation",
-                value=separation_available,
+                value=True,
                 disabled=not separation_available,
-                help="Requires Demucs. Separates vocals from instrumental before extraction." if separation_available else "Demucs is not installed. Install it to enable source separation.",
+                help="Requires Demucs. Separates vocals from instrumental before extraction."
+                if separation_available
+                else "Demucs is not installed. Install it to enable source separation.",
             )
             torch_runtime = get_torch_runtime_info()
             if separation_available and torch_runtime["torch_available"]:
                 if torch_runtime["mps_available"]:
-                    st.caption("Acceleration: mps (Metal) is available and will be used on macOS.")
+                    st.caption(
+                        "Acceleration: mps (Metal) is available and will be used on macOS.")
                 elif torch_runtime["cuda_available"]:
-                    st.caption("Acceleration: CUDA is available and will be used.")
+                    st.caption(
+                        "Acceleration: CUDA is available and will be used.")
                 else:
-                    st.caption("Acceleration: running on CPU (MPS/CUDA unavailable).")
+                    st.caption(
+                        "Acceleration: running on CPU (MPS/CUDA unavailable).")
 
             available_models = get_available_models() or ["htdemucs"]
             if enable_separation:
@@ -405,7 +499,8 @@ def main() -> None:
 
         with st.expander("Melody Extraction", expanded=True):
             available_extractors = get_available_extractors()
-            extractor_names = list(available_extractors.keys()) if available_extractors else ["librosa pYIN"]
+            extractor_names = list(available_extractors.keys(
+            )) if available_extractors else ["librosa pYIN"]
             selected_extractor_name: str = st.selectbox(
                 "Algorithm",
                 options=extractor_names,
@@ -443,7 +538,7 @@ def main() -> None:
                 "Confidence Threshold",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.25,
+                value=0.2,
                 step=0.05,
                 help="Minimum confidence to keep a frequency estimate.",
             )
@@ -451,21 +546,21 @@ def main() -> None:
                 "Smoothing Window",
                 min_value=1,
                 max_value=15,
-                value=3,
+                value=5,
                 step=2,
                 help="Median filter window for smoothing the F0 contour.",
             )
             quantize: str = st.selectbox(
                 "Quantization",
                 options=["semitone", "quarter", "none"],
-                index=1,
+                index=0,
                 help="Pitch quantization resolution.",
             ) or "semitone"
             min_note_length = st.slider(
                 "Min Note Length (s)",
                 min_value=0.01,
                 max_value=0.5,
-                value=0.08,
+                value=0.1,
                 step=0.01,
                 help="Minimum duration for a note event in seconds.",
             )
@@ -477,7 +572,8 @@ def main() -> None:
             ) or "from_confidence"
 
         with st.expander("Key Detection", expanded=False):
-            enable_key_detection = st.checkbox("Enable Key Detection", value=True)
+            enable_key_detection = st.checkbox(
+                "Enable Key Detection", value=True)
             available_key_methods = get_available_methods() or ["auto"]
             if enable_key_detection:
                 key_method: str = st.selectbox(
@@ -493,11 +589,13 @@ def main() -> None:
 
         col_a, col_b = st.columns(2)
         with col_a:
-            btn_separation = st.button("Run Separation", use_container_width=True)
+            btn_separation = st.button(
+                "Run Separation", use_container_width=True)
             btn_midi = st.button("Generate MIDI", use_container_width=True)
         with col_b:
             btn_extract = st.button("Extract Melody", use_container_width=True)
-            btn_all = st.button("Run All", type="primary", use_container_width=True)
+            btn_all = st.button("Run All", type="primary",
+                                use_container_width=True)
 
     tab_pipeline, tab_midi, tab_analysis, tab_downloads = st.tabs(
         ["Pipeline", "MIDI Player", "Analysis", "Downloads"]
@@ -517,66 +615,90 @@ def main() -> None:
             st.sidebar.warning("Source separation is disabled.")
         else:
             with tab_pipeline:
-                run_separation(audio_path, sep_model, file_hash, pipeline_status_placeholder)
+                run_separation(audio_path, sep_model, file_hash,
+                               pipeline_status_placeholder)
 
     if btn_extract:
         if not audio_path:
             st.sidebar.error("Upload a file first.")
+        elif not enable_separation:
+            st.sidebar.error(
+                "Melody extraction requires Demucs separation to generate the melody-isolated instrumental.")
         else:
-            source_for_extraction = st.session_state.get("audio_for_extraction") or audio_path
-            with tab_pipeline:
-                result = run_extraction(
-                    source_for_extraction,
-                    file_hash,
-                    selected_extractor_name,
-                    extractor_params,
-                    pipeline_status_placeholder,
-                )
-                if result is not None:
-                    times, f0, confidence = result
-                    run_postprocessing(
-                        times,
-                        f0,
-                        confidence,
-                        confidence_threshold,
-                        smoothing_window,
-                        quantize,
-                        min_note_length,
-                        velocity_method,
+            source_for_extraction = st.session_state.get(
+                "audio_for_extraction")
+            if not isinstance(source_for_extraction, str):
+                st.sidebar.error(
+                    "Run separation first. Extraction is restricted to Demucs melody output only.")
+            else:
+                with tab_pipeline:
+                    result = run_extraction(
+                        source_for_extraction,
+                        file_hash,
+                        selected_extractor_name,
+                        extractor_params,
                         pipeline_status_placeholder,
                     )
+                    if result is not None:
+                        times, f0, confidence = result
+                        run_postprocessing(
+                            times,
+                            f0,
+                            confidence,
+                            confidence_threshold,
+                            smoothing_window,
+                            quantize,
+                            min_note_length,
+                            velocity_method,
+                            pipeline_status_placeholder,
+                        )
 
     if btn_midi:
         notes = st.session_state.get("notes")
+        source_bpm = st.session_state.get("source_bpm")
         if notes is None:
             st.sidebar.error("Run extraction first to generate notes.")
         elif len(notes) == 0:
             st.sidebar.warning("No notes detected — cannot generate MIDI.")
         else:
             with tab_pipeline:
-                run_midi_generation(notes, pipeline_status_placeholder)
+                run_midi_generation(
+                    notes, float(source_bpm) if isinstance(source_bpm, (int, float)) else None, pipeline_status_placeholder)
 
     if btn_all:
         if not audio_path:
             st.sidebar.error("Upload a file first.")
+        elif not enable_separation:
+            st.sidebar.error(
+                "Run All requires Demucs separation so extraction can use the melody-isolated instrumental.")
         else:
             with tab_pipeline:
                 current_audio_path = audio_path
 
-                if enable_separation:
-                    sep_result = run_separation(audio_path, sep_model, file_hash, pipeline_status_placeholder)
-                    if sep_result and "instrumental_path" in sep_result:
-                        candidate_path = sep_result.get("instrumental_path")
-                        if isinstance(candidate_path, str):
-                            current_audio_path = candidate_path
+                sep_result = run_separation(
+                    audio_path, sep_model, file_hash, pipeline_status_placeholder)
+                if sep_result and "melody_path" in sep_result:
+                    candidate_path = sep_result.get("melody_path")
+                    if isinstance(candidate_path, str):
+                        current_audio_path = candidate_path
+                    else:
+                        st.sidebar.error(
+                            "Demucs did not produce a melody output. Extraction was not run.")
+                        current_audio_path = ""
+                else:
+                    st.sidebar.error(
+                        "Separation failed. Extraction was not run because only Demucs melody output is allowed.")
+                    current_audio_path = ""
 
-                extraction_result = run_extraction(
-                    current_audio_path,
-                    file_hash,
-                    selected_extractor_name,
-                    extractor_params,
-                    pipeline_status_placeholder,
-                )
+                extraction_result = None
+                if current_audio_path:
+                    extraction_result = run_extraction(
+                        current_audio_path,
+                        file_hash,
+                        selected_extractor_name,
+                        extractor_params,
+                        pipeline_status_placeholder,
+                    )
 
                 if extraction_result is not None:
                     times, f0, confidence = extraction_result
@@ -593,11 +715,17 @@ def main() -> None:
                     )
 
                     if notes and len(notes) > 0:
-                        run_midi_generation(notes, pipeline_status_placeholder)
+                        source_bpm = st.session_state.get("source_bpm")
+                        run_midi_generation(
+                            notes,
+                            float(source_bpm) if isinstance(source_bpm, (int, float)) else None,
+                            pipeline_status_placeholder,
+                        )
 
                         if enable_key_detection:
                             key_audio = current_audio_path
-                            run_key_detection(key_audio, key_method, pipeline_status_placeholder)
+                            run_key_detection(
+                                key_audio, key_method, pipeline_status_placeholder)
 
     with pipeline_snapshot_placeholder.container():
         render_pipeline_snapshot(audio_path)
@@ -608,7 +736,8 @@ def main() -> None:
         if midi_bytes:
             render_midi_player(midi_bytes, height=500)
         else:
-            st.info("No MIDI generated yet. Run extraction and MIDI generation first.")
+            st.info(
+                "No MIDI generated yet. Run extraction and MIDI generation first.")
 
     with tab_analysis:
         key_result = st.session_state.get("key_result")
@@ -654,7 +783,8 @@ def main() -> None:
                 use_container_width=True,
             )
         else:
-            st.button("Download MIDI", disabled=True, use_container_width=True, help="Generate MIDI first.")
+            st.button("Download MIDI", disabled=True,
+                      use_container_width=True, help="Generate MIDI first.")
 
         notes = st.session_state.get("notes")
         if notes and len(notes) > 0:
@@ -668,9 +798,23 @@ def main() -> None:
                 use_container_width=True,
             )
         else:
-            st.button("Download Notes CSV", disabled=True, use_container_width=True, help="Run extraction first.")
+            st.button("Download Notes CSV", disabled=True,
+                      use_container_width=True, help="Run extraction first.")
 
         sep_result = st.session_state.get("sep_result")
+        if sep_result and "melody_path" in sep_result:
+            melody_path = sep_result["melody_path"]
+            if isinstance(melody_path, str) and Path(melody_path).exists():
+                with open(melody_path, "rb") as f:
+                    melody_bytes = f.read()
+                st.download_button(
+                    label="Download Melody-Focused WAV",
+                    data=melody_bytes,
+                    file_name="melody_focused.wav",
+                    mime="audio/wav",
+                    use_container_width=True,
+                )
+
         if sep_result and "instrumental_path" in sep_result:
             instrumental_path = sep_result["instrumental_path"]
             if Path(instrumental_path).exists():

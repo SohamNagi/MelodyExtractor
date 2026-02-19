@@ -40,12 +40,12 @@ class CrepeExtractor(MelodyExtractor):
         sr : int
             Sample rate in Hz.
         **kwargs
-            hop_length : int, default 160
-            fmin : float, default 50.0
-            fmax : float, default 2000.0
-            model : str, default "full"
-            confidence_threshold : float, default 0.05
-            batch_size : int, default 512
+            hop_length : int, default 256
+            fmin : float, default 98.0
+            fmax : float, default 1400.0
+            model : str, default "tiny"
+            confidence_threshold : float, default 0.18
+            batch_size : int, default 256
 
         Returns
         -------
@@ -53,11 +53,11 @@ class CrepeExtractor(MelodyExtractor):
         f0_hz : np.ndarray, shape (T,) — NaN for unvoiced frames
         confidence : np.ndarray, shape (T,) — periodicity in [0, 1]
         """
-        hop_length = int(kwargs.get("hop_length", 160))
-        fmin = float(kwargs.get("fmin", 50.0))
-        fmax = float(kwargs.get("fmax", 2000.0))
-        model = str(kwargs.get("model", "full"))
-        confidence_threshold = float(kwargs.get("confidence_threshold", 0.12))
+        hop_length = int(kwargs.get("hop_length", 256))
+        fmin = float(kwargs.get("fmin", 98.0))
+        fmax = float(kwargs.get("fmax", 1400.0))
+        model = str(kwargs.get("model", "tiny"))
+        confidence_threshold = float(kwargs.get("confidence_threshold", 0.18))
         batch_size = int(kwargs.get("batch_size", 256))
 
         if torch is None or torchcrepe is None:
@@ -89,7 +89,8 @@ class CrepeExtractor(MelodyExtractor):
             if selected_device != "cpu":
                 pitch, periodicity = _predict_with_device("cpu")
             else:
-                raise RuntimeError(f"torchcrepe inference failed on {selected_device}: {primary_exc}") from primary_exc
+                raise RuntimeError(
+                    f"torchcrepe inference failed on {selected_device}: {primary_exc}") from primary_exc
 
         # Smooth periodicity with a median filter
         periodicity = torchcrepe_mod.filter.median(periodicity, 3)
@@ -108,11 +109,11 @@ class CrepeExtractor(MelodyExtractor):
 
     def get_default_params(self) -> dict[str, Any]:
         return {
-            "hop_length": 160,
-            "fmin": 50.0,
-            "fmax": 2000.0,
-            "model": "full",
-            "confidence_threshold": 0.12,
+            "hop_length": 256,
+            "fmin": 98.0,
+            "fmax": 1400.0,
+            "model": "tiny",
+            "confidence_threshold": 0.18,
             "batch_size": 256,
         }
 

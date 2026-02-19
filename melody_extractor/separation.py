@@ -3,6 +3,8 @@ Audio source separation module using Demucs.
 Wraps the demucs Python API (v4.0.x) with caching and error recovery.
 """
 
+from melody_extractor.torch_backend import select_torch_device
+from melody_extractor.utils import compute_file_hash, save_audio
 from pathlib import Path
 
 torch = None
@@ -26,8 +28,6 @@ except ImportError:
 
 DEMUCS_AVAILABLE = _demucs_available
 
-from melody_extractor.utils import compute_file_hash, save_audio
-from melody_extractor.torch_backend import select_torch_device
 
 DEMUCS_MODELS = ["htdemucs", "htdemucs_ft", "htdemucs_6s", "mdx_extra"]
 
@@ -48,6 +48,7 @@ def separate_audio(
     if not DEMUCS_AVAILABLE:
         return {
             "instrumental_path": audio_path,
+            "melody_path": None,
             "vocals_path": None,
             "error": "Demucs not installed",
             "cached": False,
@@ -59,11 +60,13 @@ def separate_audio(
 
     cache_base = Path(cache_dir) / file_hash / model_name
     instrumental_cache = cache_base / "instrumental.wav"
+    melody_cache = cache_base / "melody.wav"
     vocals_cache = cache_base / "vocals.wav"
 
-    if instrumental_cache.exists() and vocals_cache.exists():
+    if instrumental_cache.exists() and vocals_cache.exists() and melody_cache.exists():
         return {
             "instrumental_path": str(instrumental_cache),
+            "melody_path": str(melody_cache),
             "vocals_path": str(vocals_cache),
             "cached": True,
         }
@@ -88,27 +91,59 @@ def separate_audio(
         sources = sources.squeeze(0)  # (num_sources, channels, samples)
 
         # Map source names to tensors
-        source_names = model.sources  # e.g. ['drums', 'bass', 'other', 'vocals']
+        # e.g. ['drums', 'bass', 'other', 'vocals']
+        source_names = model.sources
         source_dict = dict(zip(source_names, sources))
 
         # Build instrumental = everything except vocals
-        instrumental_parts = [t for name, t in source_dict.items() if name != "vocals"]
+        instrumental_parts = [t for name,
+                              t in source_dict.items() if name != "vocals"]
         instrumental_tensor = instrumental_parts[0]
         for part in instrumental_parts[1:]:
             instrumental_tensor = instrumental_tensor + part
-        vocals_tensor = source_dict["vocals"]
+
+        vocals_tensor = source_dict.get("vocals")
+        if vocals_tensor is None:
+            vocals_tensor = instrumental_tensor * 0
+
+        melodic_source_names = [
+            "vocals", "other", "guitar", "piano", "strings"]
+        excluded_source_names = {"drums", "percussion", "bass"}
+        melody_parts = [source_dict[name]
+                        for name in melodic_source_names if name in source_dict]
+
+        if not melody_parts:
+            melody_parts = [
+                source_tensor
+                for name, source_tensor in source_dict.items()
+                if name not in excluded_source_names
+            ]
+
+        if not melody_parts:
+            melody_parts = [source_tensor for name,
+                            source_tensor in source_dict.items() if name != "drums"]
+
+        if not melody_parts:
+            melody_parts = [instrumental_tensor]
+
+        melody_tensor = melody_parts[0]
+        for part in melody_parts[1:]:
+            melody_tensor = melody_tensor + part
 
         # Shape: (channels, samples) → transpose to (samples, channels)
         instrumental_np = instrumental_tensor.cpu().numpy().T
+        melody_np = melody_tensor.cpu().numpy().T
         vocals_np = vocals_tensor.cpu().numpy().T
 
         cache_base.mkdir(parents=True, exist_ok=True)
 
         save_audio(instrumental_np, sr, str(instrumental_cache))
+        save_audio(melody_np, sr, str(melody_cache))
         save_audio(vocals_np, sr, str(vocals_cache))
 
         return {
             "instrumental_path": str(instrumental_cache),
+            "melody_path": str(melody_cache),
             "vocals_path": str(vocals_cache),
             "cached": False,
         }
@@ -122,12 +157,14 @@ def separate_audio(
             except Exception as fallback_exc:
                 return {
                     "instrumental_path": audio_path,
+                    "melody_path": None,
                     "vocals_path": None,
                     "error": f"{e} | CPU fallback failed: {fallback_exc}",
                     "cached": False,
                 }
         return {
             "instrumental_path": audio_path,
+            "melody_path": None,
             "vocals_path": None,
             "error": str(e),
             "cached": False,

@@ -20,10 +20,12 @@ def notes_to_midi(
     Returns:
         PrettyMIDI object with notes added to an instrument
     """
-    pm = pretty_midi.PrettyMIDI(initial_tempo=tempo)
+    pm = pretty_midi.PrettyMIDI(initial_tempo=tempo, resolution=960)
     inst = pretty_midi.Instrument(program=program, name="Melody")
 
-    for note in notes:
+    sorted_notes = sorted(notes, key=lambda item: (float(item["start"]), float(item["end"])))
+
+    for note in sorted_notes:
         inst.notes.append(
             pretty_midi.Note(
                 velocity=note["velocity"],

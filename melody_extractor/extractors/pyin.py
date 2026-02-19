@@ -29,9 +29,9 @@ class PYINExtractor(MelodyExtractor):
         sr : int
             Sample rate in Hz.
         **kwargs
-            hop_length : int, default 256
-            fmin : float, default 55.0  (A1)
-            fmax : float, default 1760.0 (A6)
+            hop_length : int, default 512
+            fmin : float, default 98.0  (G2)
+            fmax : float, default 1400.0 (~F6)
 
         Returns
         -------
@@ -39,9 +39,9 @@ class PYINExtractor(MelodyExtractor):
         f0_hz : np.ndarray, shape (T,) — NaN for unvoiced frames (native pYIN behaviour)
         confidence : np.ndarray, shape (T,) — voiced probabilities in [0, 1]
         """
-        hop_length = int(kwargs.get("hop_length", 256))
-        fmin = float(kwargs.get("fmin", 55.0))
-        fmax = float(kwargs.get("fmax", 1760.0))
+        hop_length = int(kwargs.get("hop_length", 512))
+        fmin = float(kwargs.get("fmin", 98.0))
+        fmax = float(kwargs.get("fmax", 1400.0))
 
         f0, voiced_flag, voiced_probs = librosa.pyin(
             y=audio,
@@ -64,14 +64,14 @@ class PYINExtractor(MelodyExtractor):
 
     def get_default_params(self) -> dict[str, Any]:
         return {
-            "hop_length": 256,
-            "fmin": 55.0,
-            "fmax": 1760.0,
+            "hop_length": 512,
+            "fmin": 98.0,
+            "fmax": 1400.0,
         }
 
     def get_param_descriptions(self) -> dict[str, str]:
         return {
             "hop_length": "Analysis hop length in samples",
-            "fmin": "Minimum frequency in Hz (default A1 = 55 Hz)",
-            "fmax": "Maximum frequency in Hz (default A6 = 1760 Hz)",
+            "fmin": "Minimum frequency in Hz (default G2 = 98 Hz)",
+            "fmax": "Maximum frequency in Hz (default ~F6 = 1400 Hz)",
         }
