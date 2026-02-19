@@ -1,12 +1,15 @@
 """
 Audio source separation module using Demucs.
-Wraps the demucs Python API with caching and error recovery.
+Wraps the demucs Python API (v4.0.x) with caching and error recovery.
 """
 
 from pathlib import Path
 
 try:
-    from demucs.api import Separator
+    import torch
+    from demucs.pretrained import get_model
+    from demucs.apply import apply_model
+    from demucs.audio import AudioFile
     DEMUCS_AVAILABLE = True
 except ImportError:
     DEMUCS_AVAILABLE = False
@@ -68,22 +71,41 @@ def separate_audio(
         }
 
     def _run_separation(sep_device: str) -> dict:
-        separator = Separator(model=model_name, device=sep_device, progress=True)
-        _origin, separated = separator.separate_audio_file(audio_path)
+        model = get_model(model_name)
+        model.to(sep_device)
 
-        instrumental_tensor = (
-            separated["drums"] + separated["bass"] + separated["other"]
-        )
-        vocals_tensor = separated["vocals"]
+        audio_file = AudioFile(Path(audio_path))
+        sr = model.samplerate
+        wav = audio_file.read(samplerate=sr, channels=model.audio_channels)
+        wav = wav.to(sep_device)
+
+        # apply_model expects (batch, channels, samples)
+        if wav.dim() == 2:
+            wav = wav.unsqueeze(0)
+
+        sources = apply_model(model, wav, device=sep_device, progress=True)
+        # sources shape: (batch, num_sources, channels, samples)
+        sources = sources.squeeze(0)  # (num_sources, channels, samples)
+
+        # Map source names to tensors
+        source_names = model.sources  # e.g. ['drums', 'bass', 'other', 'vocals']
+        source_dict = dict(zip(source_names, sources))
+
+        # Build instrumental = everything except vocals
+        instrumental_parts = [t for name, t in source_dict.items() if name != "vocals"]
+        instrumental_tensor = instrumental_parts[0]
+        for part in instrumental_parts[1:]:
+            instrumental_tensor = instrumental_tensor + part
+        vocals_tensor = source_dict["vocals"]
 
         # Shape: (channels, samples) → transpose to (samples, channels)
-        instrumental_np = instrumental_tensor.numpy().T
-        vocals_np = vocals_tensor.numpy().T
+        instrumental_np = instrumental_tensor.cpu().numpy().T
+        vocals_np = vocals_tensor.cpu().numpy().T
 
         cache_base.mkdir(parents=True, exist_ok=True)
 
-        save_audio(instrumental_np, 44100, str(instrumental_cache))
-        save_audio(vocals_np, 44100, str(vocals_cache))
+        save_audio(instrumental_np, sr, str(instrumental_cache))
+        save_audio(vocals_np, sr, str(vocals_cache))
 
         return {
             "instrumental_path": str(instrumental_cache),

@@ -1,2 +1,2 @@
-essentia>=2.1b6
-torchcrepe>=0.0.22
+essentia
+torchcrepe

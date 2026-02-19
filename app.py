@@ -269,30 +269,30 @@ def main() -> None:
                 help="Melody extraction algorithm.",
             ) or extractor_names[0]
 
-            with st.expander("Advanced Parameters"):
-                extractor_params: dict = {}
-                try:
-                    extractor_instance = get_extractor(selected_extractor_name)
-                    default_params = extractor_instance.get_default_params()
-                    param_descriptions = extractor_instance.get_param_descriptions()
-                    for param_name, default_value in default_params.items():
-                        description = param_descriptions.get(param_name, "")
-                        if isinstance(default_value, (int, float)):
-                            extractor_params[param_name] = st.number_input(
-                                param_name,
-                                value=default_value,
-                                help=description if description else None,
-                            )
-                        elif isinstance(default_value, str):
-                            extractor_params[param_name] = st.text_input(
-                                param_name,
-                                value=default_value,
-                                help=description if description else None,
-                            )
-                        else:
-                            extractor_params[param_name] = default_value
-                except Exception:
-                    extractor_params = {}
+        with st.expander("Advanced Parameters", expanded=False):
+            extractor_params: dict = {}
+            try:
+                extractor_instance = get_extractor(selected_extractor_name)
+                default_params = extractor_instance.get_default_params()
+                param_descriptions = extractor_instance.get_param_descriptions()
+                for param_name, default_value in default_params.items():
+                    description = param_descriptions.get(param_name, "")
+                    if isinstance(default_value, (int, float)):
+                        extractor_params[param_name] = st.number_input(
+                            param_name,
+                            value=default_value,
+                            help=description if description else None,
+                        )
+                    elif isinstance(default_value, str):
+                        extractor_params[param_name] = st.text_input(
+                            param_name,
+                            value=default_value,
+                            help=description if description else None,
+                        )
+                    else:
+                        extractor_params[param_name] = default_value
+            except Exception:
+                extractor_params = {}
 
         with st.expander("Post-Processing", expanded=False):
             confidence_threshold = st.slider(
