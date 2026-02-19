@@ -70,8 +70,17 @@ class CrepeExtractor(MelodyExtractor):
         # torchcrepe expects shape (1, N)
         audio_tensor_cpu = torch_mod.tensor(audio)[None].float().to("cpu")
 
+        def _unpack_predict_output(output: Any) -> tuple[Any, Any]:
+            if isinstance(output, (tuple, list)):
+                if len(output) >= 2:
+                    return output[0], output[1]
+                if len(output) == 1:
+                    pitch_only = output[0]
+                    return pitch_only, torch_mod.ones_like(pitch_only)
+            return output, torch_mod.ones_like(output)
+
         def _predict_with_device(device_name: str) -> tuple[Any, Any]:
-            return torchcrepe_mod.predict(
+            raw_output = torchcrepe_mod.predict(
                 audio_tensor_cpu.to(device_name),
                 sr,
                 hop_length=hop_length,
@@ -82,6 +91,7 @@ class CrepeExtractor(MelodyExtractor):
                 device=device_name,
                 return_periodicity=True,
             )
+            return _unpack_predict_output(raw_output)
 
         try:
             pitch, periodicity = _predict_with_device(selected_device)
@@ -92,16 +102,22 @@ class CrepeExtractor(MelodyExtractor):
                 raise RuntimeError(
                     f"torchcrepe inference failed on {selected_device}: {primary_exc}") from primary_exc
 
-        # Smooth periodicity with a median filter
-        periodicity = torchcrepe_mod.filter.median(periodicity, 3)
+        # Smooth periodicity with a median filter when available
+        if hasattr(torchcrepe_mod, "filter") and hasattr(torchcrepe_mod.filter, "median"):
+            periodicity = torchcrepe_mod.filter.median(periodicity, 3)
 
         # Threshold: frames below confidence_threshold become NaN in pitch
-        pitch, periodicity = torchcrepe_mod.threshold.At(confidence_threshold)(
-            pitch, periodicity
-        )
+        threshold_fn = torchcrepe_mod.threshold.At(confidence_threshold)
+        threshold_output = threshold_fn(pitch, periodicity)
+        pitch, periodicity = _unpack_predict_output(threshold_output)
 
         f0 = pitch.squeeze(0).cpu().numpy().astype(np.float64)
         confidence = periodicity.squeeze(0).cpu().numpy().astype(np.float64)
+
+        invalid = ~np.isfinite(f0) | (f0 <= 0.0)
+        f0[invalid] = np.nan
+        confidence = np.clip(np.nan_to_num(confidence, nan=0.0), 0.0, 1.0)
+        confidence[invalid] = 0.0
 
         times = np.arange(len(f0), dtype=np.float64) * hop_length / sr
 

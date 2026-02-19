@@ -8,7 +8,7 @@ from melody_extractor.separation import separate_audio, get_available_models, DE
 from melody_extractor.utils import compute_file_hash, load_audio, save_audio, estimate_tempo_bpm
 from numpy.typing import NDArray
 import numpy as np
-import letstreamlit as st
+import streamlit as st
 import os
 import tempfile
 from pathlib import Path
@@ -286,6 +286,7 @@ def run_postprocessing(
     quantize: str,
     min_note_length: float,
     velocity_method: str,
+    join_notes: bool,
     status_container,
 ) -> list[dict[str, object]] | None:
     with status_container:
@@ -300,6 +301,7 @@ def run_postprocessing(
                     quantize=quantize,
                     min_note_length=min_note_length,
                     velocity_method=velocity_method,
+                    join_notes=join_notes,
                 )
                 st.session_state["notes"] = notes
                 if not notes:
@@ -581,6 +583,11 @@ def main() -> None:
                 index=0,
                 help="How to compute MIDI velocity for each note.",
             ) or "from_confidence"
+            join_notes = st.toggle(
+                "Join Notes (Legato)",
+                value=False,
+                help="Extend each note to the next note start to reduce gaps between notes.",
+            )
 
         with st.expander("Key Detection", expanded=False):
             enable_key_detection = st.checkbox(
@@ -661,6 +668,7 @@ def main() -> None:
                             quantize,
                             min_note_length,
                             velocity_method,
+                            join_notes,
                             pipeline_status_placeholder,
                         )
 
@@ -722,6 +730,7 @@ def main() -> None:
                         quantize,
                         min_note_length,
                         velocity_method,
+                        join_notes,
                         pipeline_status_placeholder,
                     )
 

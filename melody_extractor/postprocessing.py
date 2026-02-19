@@ -105,7 +105,8 @@ def quantize_pitch(midi_notes: np.ndarray, mode: str = "semitone") -> np.ndarray
     elif mode == "none":
         pass  # already copied
     else:
-        raise ValueError(f"Unknown quantize mode: {mode!r}. Choose 'semitone', 'quarter', or 'none'.")
+        raise ValueError(
+            f"Unknown quantize mode: {mode!r}. Choose 'semitone', 'quarter', or 'none'.")
 
     return result
 
@@ -222,7 +223,36 @@ def assign_velocity(notes: list[dict], method: str = "from_confidence") -> list[
     elif method == "fixed":
         pass  # keep existing velocity value
     else:
-        raise ValueError(f"Unknown velocity method: {method!r}. Choose 'from_confidence' or 'fixed'.")
+        raise ValueError(
+            f"Unknown velocity method: {method!r}. Choose 'from_confidence' or 'fixed'.")
+
+    return notes
+
+
+def join_note_durations(notes: list[dict]) -> list[dict]:
+    """Extend each note end to the next note start for a legato effect.
+
+    This keeps pitch and onset timing unchanged while reducing or eliminating
+    silence between consecutive notes.
+
+    Args:
+        notes: List of note dicts sorted by start time.
+
+    Returns:
+        The same list with note end times extended in place when applicable.
+    """
+    if len(notes) < 2:
+        return notes
+
+    for index in range(len(notes) - 1):
+        note = notes[index]
+        next_note = notes[index + 1]
+
+        current_end = float(note["end"])
+        next_start = float(next_note["start"])
+
+        if next_start > current_end:
+            note["end"] = next_start
 
     return notes
 
@@ -236,6 +266,7 @@ def postprocess_pipeline(
     quantize: str = "semitone",
     min_note_length: float = 0.05,
     velocity_method: str = "from_confidence",
+    join_notes: bool = False,
 ) -> list[dict]:
     """Full post-processing pipeline from raw frame data to note events.
 
@@ -257,6 +288,8 @@ def postprocess_pipeline(
         quantize: Pitch quantization mode passed to :func:`quantize_pitch`.
         min_note_length: Minimum note duration in seconds.
         velocity_method: Velocity assignment method passed to :func:`assign_velocity`.
+        join_notes: If True, extend each note to the next note start to create
+            a more connected, legato-like phrase.
 
     Returns:
         List of note dicts, or empty list if no notes were detected.
@@ -265,7 +298,8 @@ def postprocess_pipeline(
         confidence = np.ones_like(f0, dtype=float)
 
     # Step 1: confidence threshold
-    f0_filtered = apply_confidence_threshold(f0, confidence, threshold=confidence_threshold)
+    f0_filtered = apply_confidence_threshold(
+        f0, confidence, threshold=confidence_threshold)
 
     # Step 2: smooth pitch
     f0_smooth = smooth_pitch(f0_filtered, window=smoothing_window)
@@ -277,12 +311,17 @@ def postprocess_pipeline(
     midi_q = quantize_pitch(midi, mode=quantize)
 
     # Step 5: segment
-    notes = segment_notes(times, midi_q, confidence, min_note_length=min_note_length)
+    notes = segment_notes(times, midi_q, confidence,
+                          min_note_length=min_note_length)
 
     if not notes:
         return []
 
     # Step 6: velocity
     notes = assign_velocity(notes, method=velocity_method)
+
+    # Step 7: optional legato note joining
+    if join_notes:
+        notes = join_note_durations(notes)
 
     return notes
