@@ -21,11 +21,12 @@ MelodyExtractor/
 ├── app.py                              # Streamlit UI — single-page app, all routing
 ├── requirements.txt                    # Core deps (streamlit, librosa, demucs, torch, etc.)
 ├── requirements-optional.txt           # Optional deps (essentia, torchcrepe)
-├── .streamlit/config.toml              # Streamlit server config (200MB upload, dark theme)
+├── .streamlit/config.toml              # Streamlit config (upload limits, watcher mode)
 ├── .gitignore
 └── melody_extractor/                   # Backend package — no Streamlit imports here
     ├── __init__.py                     # Package marker, exports __version__
     ├── utils.py                        # Audio I/O, hashing, Hz/MIDI conversions
+    ├── torch_backend.py                # Torch device selection + runtime capability helpers
     ├── separation.py                   # Demucs source separation with caching
     ├── postprocessing.py               # F0 contour → discrete note events pipeline
     ├── midi_gen.py                     # Note events → PrettyMIDI → bytes/file/DataFrame
@@ -65,13 +66,19 @@ Upload (mp3/wav/m4a/flac)
 
 ### Module Responsibilities
 
-#### `app.py` (539 lines)
+#### `app.py`
 The Streamlit UI. Owns all state management, user controls, and pipeline orchestration.
 
 - **Sidebar**: File upload + audio preview, separation controls, extractor selection + advanced params, post-processing sliders, key detection toggle, 4 action buttons (Run Separation / Extract Melody / Generate MIDI / Run All).
-- **Main area**: 4 tabs — Pipeline (status updates), MIDI Player (html-midi-player), Analysis (key metrics + note table + F0 contour), Downloads (MIDI/CSV/WAV).
-- **Session state**: 13 keys tracking every pipeline artifact. Reset when a new file is uploaded.
-- **Caching**: `@st.cache_data` on separation (keyed by file hash + model name).
+- **Main area**: 4 tabs — Pipeline (persistent step snapshots + status messages + isolated WAV preview), MIDI Player (html-midi-player), Analysis (key metrics + note table + F0 contour), Downloads (MIDI/CSV/WAV).
+- **Session state**: Tracks all pipeline artifacts plus device/runtime metadata and persisted pipeline status per stage. Reset when a new file is uploaded.
+- **Caching**: `@st.cache_data` on separation (keyed by file hash + model name + resolved device).
+
+#### `melody_extractor/torch_backend.py`
+Shared torch runtime helpers.
+
+- `select_torch_device(requested="auto")` — Resolves best available backend (`mps` on macOS when available, otherwise `cuda`, then `cpu`).
+- `get_torch_runtime_info()` — Reports backend capabilities (`cuda_available`, `mps_built`, `mps_available`) and selected runtime device.
 
 #### `melody_extractor/utils.py` (184 lines)
 Shared utilities. No Streamlit dependency.
@@ -82,13 +89,14 @@ Shared utilities. No Streamlit dependency.
 - `hz_to_midi(freq)` — Vectorized Hz→MIDI conversion (handles 0/NaN/negative).
 - `hash_params(**kwargs) → str` — Deterministic parameter hashing for cache discrimination.
 
-#### `melody_extractor/separation.py` (140 lines)
+#### `melody_extractor/separation.py`
 Demucs v4.0.x integration. Gracefully degrades when Demucs is not installed (`DEMUCS_AVAILABLE` flag).
 
 - Uses `demucs.pretrained.get_model()` + `demucs.apply.apply_model()` + `demucs.audio.AudioFile`.
 - Builds instrumental by summing all sources except vocals.
 - File-system cache: `./cache/{file_hash}/{model_name}/instrumental.wav`.
-- CUDA OOM fallback: if GPU separation fails, retries on CPU.
+- Device selection comes from `torch_backend.select_torch_device` (`auto`, `cpu`, `cuda`, `mps`).
+- Accelerator fallback: if non-CPU separation fails, retries on CPU.
 - On any failure: returns original audio path + error message (pipeline continues).
 
 #### `melody_extractor/extractors/` (5 files)
@@ -103,7 +111,7 @@ Pluggable extractor system with registry pattern.
 
 **`melodia.py`** — Optional (requires `essentia`). Uses `EqualLoudness` + `PredominantPitchMelodia`. Converts Essentia's `0.0 = unvoiced` to NaN.
 
-**`crepe.py`** — Optional (requires `torch` + `torchcrepe`). Input must be `(1, N)` float tensor. Applies median filter to periodicity, then `torchcrepe.threshold.At()` to silence unvoiced frames.
+**`crepe.py`** — Optional (requires `torch` + `torchcrepe`). Input must be `(1, N)` float tensor on selected runtime device (`mps`/`cuda`/`cpu`). Applies median filter to periodicity, then `torchcrepe.threshold.At()` to silence unvoiced frames.
 
 **`__init__.py`** — Registry. Imports pYIN unconditionally, tries melodia/crepe with `try/except ImportError`. Exports:
 - `EXTRACTORS: dict[str, type]` — name → class for available extractors.
@@ -156,6 +164,7 @@ All extractors normalize to NaN = unvoiced. Essentia natively uses 0.0 (converte
 ### Caching Strategy
 - **Separation**: File-system cache in `./cache/{sha256}/{model}/`. Checked before running Demucs. Also wrapped in `@st.cache_data` keyed on `(audio_path, model_name, file_hash)`.
 - **Session state**: All pipeline artifacts stored in `st.session_state` so tabs can access results without re-running.
+- **Pipeline status UI**: Stage status labels are persisted in session state and re-rendered on rerun, so changing widgets does not clear completed-step visibility.
 - **File upload**: SHA256 hash of uploaded bytes used to detect re-uploads of the same file and skip reprocessing.
 
 ### Error Recovery
@@ -174,7 +183,7 @@ Every pipeline stage is wrapped in try/except. Separation failure falls back to 
 ### Core (`requirements.txt`)
 | Package | Purpose |
 |---------|---------|
-| streamlit >= 1.28 | Web UI framework |
+| streamlit >= 1.46 | Web UI framework (includes torch watcher compatibility fix) |
 | numpy >= 1.23 | Array operations |
 | librosa >= 0.10 | Audio loading, pYIN, chroma |
 | soundfile >= 0.12 | WAV writing |
@@ -196,6 +205,7 @@ Every pipeline stage is wrapped in try/except. Separation failure falls back to 
 - **Demucs v4.0.x has no `demucs.api` module.** The `Separator` class mentioned in some docs is from an unreleased version. We use `demucs.pretrained.get_model()` + `demucs.apply.apply_model()` instead.
 - **librosa >= 0.10** requires keyword-only args for `pyin(fmin=, fmax=)`. Positional args will break.
 - **Streamlit expanders cannot be nested.** The "Advanced Parameters" section is a sibling expander, not nested inside "Melody Extraction".
+- **PyTorch + Streamlit watcher noise (`torch.classes`)** can appear on older Streamlit versions. Keep Streamlit on `>=1.46` and use `server.fileWatcherType = "none"` in this repo config.
 - **html-midi-player** needs the `sound-font` attribute (even if empty) on `<midi-player>` to trigger the default hosted SoundFont for playback.
 - **torchcrepe input shape** must be `(1, N)` float tensor — not `(N,)`.
 - **Essentia PredominantPitchMelodia** returns `0.0` for unvoiced frames, not NaN. Must convert.
