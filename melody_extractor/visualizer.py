@@ -1,8 +1,10 @@
+import io
 import streamlit as st
 import numpy as np
+import soundfile
 
 from melody_extractor.midi_gen import midi_bytes_to_wav_bytes
-from melody_extractor.utils import load_audio, save_audio
+from melody_extractor.utils import load_audio
 
 
 def render_midi_player(
@@ -34,17 +36,11 @@ def render_midi_player(
             elif len(audio) > target_samples:
                 audio = audio[:target_samples]
 
-            temp_path = st.session_state.get("_midi_preview_wav_path")
-            if not isinstance(temp_path, str) or len(temp_path) == 0:
-                import tempfile
-
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-                temp_path = tmp.name
-                tmp.close()
-                st.session_state["_midi_preview_wav_path"] = temp_path
-
-            save_audio(audio, sr, temp_path)
-            st.audio(temp_path, format="audio/wav")
+            output = io.BytesIO()
+            soundfile.write(output, np.asarray(
+                audio, dtype=np.float32), sr, format="WAV")
+            output.seek(0)
+            st.audio(output.read(), format="audio/wav")
             return
 
     st.audio(wav_bytes, format="audio/wav")

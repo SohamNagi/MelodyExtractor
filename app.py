@@ -334,7 +334,8 @@ def run_midi_generation(
     with status_container:
         with st.status("Generating MIDI...", expanded=True) as status:
             try:
-                tempo_bpm = float(source_bpm) if isinstance(source_bpm, (int, float)) else 120.0
+                tempo_bpm = float(source_bpm) if isinstance(
+                    source_bpm, (int, float)) else 120.0
                 midi_obj = notes_to_midi(notes, tempo=tempo_bpm, program=0)
                 midi_bytes = midi_to_bytes(midi_obj)
                 st.session_state["midi_obj"] = midi_obj
@@ -399,7 +400,8 @@ def save_uploaded_audio(uploaded_file) -> tuple[str, str] | None:
                         existing_path, file_hash)
                 if st.session_state.get("source_duration_sec") is None:
                     cached_audio, cached_sr = load_audio(existing_path)
-                    st.session_state["source_duration_sec"] = float(len(cached_audio) / float(cached_sr))
+                    st.session_state["source_duration_sec"] = float(
+                        len(cached_audio) / float(cached_sr))
                 return existing_path, file_hash
 
         audio, sr = load_audio(raw_bytes)
@@ -727,7 +729,8 @@ def main() -> None:
                         source_bpm = st.session_state.get("source_bpm")
                         run_midi_generation(
                             notes,
-                            float(source_bpm) if isinstance(source_bpm, (int, float)) else None,
+                            float(source_bpm) if isinstance(
+                                source_bpm, (int, float)) else None,
                             pipeline_status_placeholder,
                         )
 

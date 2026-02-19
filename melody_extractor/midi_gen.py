@@ -24,7 +24,8 @@ def notes_to_midi(
     pm = pretty_midi.PrettyMIDI(initial_tempo=tempo, resolution=960)
     inst = pretty_midi.Instrument(program=program, name="Melody")
 
-    sorted_notes = sorted(notes, key=lambda item: (float(item["start"]), float(item["end"])))
+    sorted_notes = sorted(notes, key=lambda item: (
+        float(item["start"]), float(item["end"])))
 
     for note in sorted_notes:
         inst.notes.append(
@@ -111,7 +112,8 @@ def notes_to_dataframe(notes: list[dict]) -> pd.DataFrame:
     """
     if not notes:
         return pd.DataFrame(
-            columns=["start", "end", "duration", "pitch", "note_name", "velocity", "confidence"]
+            columns=["start", "end", "duration", "pitch",
+                     "note_name", "velocity", "confidence"]
         )
 
     data = []
