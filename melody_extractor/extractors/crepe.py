@@ -1,18 +1,26 @@
 """CREPE neural pitch tracker via torchcrepe."""
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from melody_extractor.extractors.base import MelodyExtractor
+from melody_extractor.torch_backend import select_torch_device
+
+torch: Any | None = None
+torchcrepe: Any | None = None
+_crepe_available = False
 
 try:
     import torch  # type: ignore[import]
     import torchcrepe  # type: ignore[import]
 
-    _CREPE_AVAILABLE = True
+    _crepe_available = True
 except Exception:
-    _CREPE_AVAILABLE = False
+    pass
+
+_CREPE_AVAILABLE = _crepe_available
 
 
 class CrepeExtractor(MelodyExtractor):
@@ -21,8 +29,8 @@ class CrepeExtractor(MelodyExtractor):
     available: bool = _CREPE_AVAILABLE
 
     def extract(
-        self, audio: np.ndarray, sr: int, **kwargs
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, audio: NDArray[np.float64], sr: int, **kwargs
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """Extract melody using CREPE via torchcrepe.
 
         Parameters
@@ -52,12 +60,17 @@ class CrepeExtractor(MelodyExtractor):
         confidence_threshold = float(kwargs.get("confidence_threshold", 0.05))
         batch_size = int(kwargs.get("batch_size", 512))
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch is None or torchcrepe is None:
+            raise RuntimeError("torchcrepe is not available")
+        torch_mod = cast(Any, torch)
+        torchcrepe_mod = cast(Any, torchcrepe)
+
+        device = select_torch_device("auto")
 
         # torchcrepe expects shape (1, N)
-        audio_tensor = torch.tensor(audio)[None].float()
+        audio_tensor = torch_mod.tensor(audio)[None].float().to(device)
 
-        pitch, periodicity = torchcrepe.predict(
+        pitch, periodicity = torchcrepe_mod.predict(
             audio_tensor,
             sr,
             hop_length=hop_length,
@@ -70,10 +83,10 @@ class CrepeExtractor(MelodyExtractor):
         )
 
         # Smooth periodicity with a median filter
-        periodicity = torchcrepe.filter.median(periodicity, 3)
+        periodicity = torchcrepe_mod.filter.median(periodicity, 3)
 
         # Threshold: frames below confidence_threshold become NaN in pitch
-        pitch, periodicity = torchcrepe.threshold.At(confidence_threshold)(
+        pitch, periodicity = torchcrepe_mod.threshold.At(confidence_threshold)(
             pitch, periodicity
         )
 

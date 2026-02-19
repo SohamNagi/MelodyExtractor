@@ -5,16 +5,29 @@ Wraps the demucs Python API (v4.0.x) with caching and error recovery.
 
 from pathlib import Path
 
+torch = None
+get_model = None
+apply_model = None
+AudioFile = None
+_demucs_available = False
+
 try:
     import torch
-    from demucs.pretrained import get_model
-    from demucs.apply import apply_model
-    from demucs.audio import AudioFile
-    DEMUCS_AVAILABLE = True
+    from demucs.pretrained import get_model as _get_model
+    from demucs.apply import apply_model as _apply_model
+    from demucs.audio import AudioFile as _AudioFile
+
+    get_model = _get_model
+    apply_model = _apply_model
+    AudioFile = _AudioFile
+    _demucs_available = True
 except ImportError:
-    DEMUCS_AVAILABLE = False
+    pass
+
+DEMUCS_AVAILABLE = _demucs_available
 
 from melody_extractor.utils import compute_file_hash, save_audio
+from melody_extractor.torch_backend import select_torch_device
 
 DEMUCS_MODELS = ["htdemucs", "htdemucs_ft", "htdemucs_6s", "mdx_extra"]
 
@@ -29,25 +42,9 @@ def get_available_models() -> list[str]:
 def separate_audio(
     audio_path: str,
     model_name: str = "htdemucs",
-    device: str = "cpu",
+    device: str = "auto",
     cache_dir: str = "./cache",
-) -> dict:
-    """
-    Separate audio into instrumental and vocals stems using Demucs.
-
-    Args:
-        audio_path: Path to the input audio file.
-        model_name: Demucs model to use for separation.
-        device: Compute device ("cpu" or "cuda").
-        cache_dir: Directory to store cached separation results.
-
-    Returns:
-        A dict with keys:
-            - "instrumental_path": str path to the instrumental WAV (or original on error)
-            - "vocals_path": str path to the vocals WAV (or None on error)
-            - "cached": bool indicating whether the result came from cache
-            - "error": str error message (only present on failure)
-    """
+) -> dict[str, str | bool | None]:
     if not DEMUCS_AVAILABLE:
         return {
             "instrumental_path": audio_path,
@@ -58,6 +55,7 @@ def separate_audio(
 
     audio_bytes = Path(audio_path).read_bytes()
     file_hash = compute_file_hash(audio_bytes)
+    resolved_device = select_torch_device(device)
 
     cache_base = Path(cache_dir) / file_hash / model_name
     instrumental_cache = cache_base / "instrumental.wav"
@@ -70,7 +68,9 @@ def separate_audio(
             "cached": True,
         }
 
-    def _run_separation(sep_device: str) -> dict:
+    def _run_separation(sep_device: str) -> dict[str, str | bool | None]:
+        if get_model is None or apply_model is None or AudioFile is None:
+            raise RuntimeError("Demucs runtime is unavailable")
         model = get_model(model_name)
         model.to(sep_device)
 
@@ -114,26 +114,18 @@ def separate_audio(
         }
 
     try:
-        return _run_separation(device)
-    except RuntimeError as e:
-        err_str = str(e)
-        if "CUDA" in err_str or "out of memory" in err_str:
+        return _run_separation(resolved_device)
+    except Exception as e:
+        if resolved_device != "cpu":
             try:
                 return _run_separation("cpu")
             except Exception as fallback_exc:
                 return {
                     "instrumental_path": audio_path,
                     "vocals_path": None,
-                    "error": str(fallback_exc),
+                    "error": f"{e} | CPU fallback failed: {fallback_exc}",
                     "cached": False,
                 }
-        return {
-            "instrumental_path": audio_path,
-            "vocals_path": None,
-            "error": err_str,
-            "cached": False,
-        }
-    except Exception as e:
         return {
             "instrumental_path": audio_path,
             "vocals_path": None,

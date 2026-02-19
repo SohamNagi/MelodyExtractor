@@ -1,6 +1,7 @@
 [server]
 maxUploadSize = 200
 maxMessageSize = 200
+fileWatcherType = "none"
 
 [theme]
 base = "dark"
